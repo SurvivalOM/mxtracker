@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MX · Day Tracker</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='1' y='1' width='30' height='30' rx='7' fill='%232f6b12'/><rect x='1.8' y='1.8' width='28.4' height='28.4' rx='6.2' fill='none' stroke='%23C6A249' stroke-width='1.2'/><text x='16' y='22' font-family='Arial' font-size='15' font-weight='700' fill='%23E8CD7C' text-anchor='middle'>MX</text></svg>">
+<meta name="theme-color" content="#0e0e11">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MX">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><rect width='180' height='180' rx='40' fill='%230e0e11'/><rect x='34' y='40' width='112' height='104' rx='16' fill='%232f6fed'/><rect x='34' y='40' width='112' height='26' rx='16' fill='%232456c9'/><circle cx='64' cy='36' r='7' fill='%23c9ccd2'/><circle cx='116' cy='36' r='7' fill='%23c9ccd2'/><text x='90' y='120' font-family='Arial' font-size='52' font-weight='700' fill='%23fff' text-anchor='middle'>MX</text></svg>">
+<link rel="manifest" href="manifest.webmanifest">
 <style>
 :root{--navy:#1B2C54;--gold:#C6A249;--bg:#f6f6f4;--card:#fff;--line:rgba(0,0,0,.10);--line2:rgba(0,0,0,.20);--tx:#1d1d1f;--mut:#6b6b6b;--mut2:#9a9a98;--vata:#E7E9F5;--kapha:#E9F0E3;--pitta:#F7EFDD}
 *{box-sizing:border-box}
@@ -355,7 +362,94 @@ function fbBoot(){
   });
  }catch(e){console.warn('fb boot',e);}
 }
-try{mxInitGate();}catch(e){}
+/* ===== Voice: speak your day, auto-draft the blocks (in-app, no AI needed) ===== */
+var mxRec=null,mxListening=false;
+var MX_KW=[
+ ['hygiene',['personal hygiene','hygiene',' ph ','p h ','bath','shower','brush','freshen','wash','toilet','bathroom']],
+ ['chant',['japa','rounds',' round ','chanting','beads']],
+ ['krishna',['chaitanya','charitamrita','krishna','seva','deity','temple','gita','bhagavat','kirtan','aarti','radha','mangal','sadhana','prabhu']],
+ ['body',['gym','workout','work out','exercise','walk','pranayama','nadi','yoga','breakfast','lunch','dinner','meal','food',' ate ','hp1','hp2','stretch']],
+ ['knowledge',['read','study','wisdom','learn','research','tirukkural','course']],
+ ['recreation',['movie','news','watch','tv','youtube','relax','rest',' nap','music','game']],
+ ['family',['family','wife','kids','children','son','daughter','mother','amma','brother','father','vrindha','medha','dhruva','sumatra']],
+ ['transition',['prepare','prepared','getting ready','travel','commute','errand','out for','stepped out','packing']],
+ ['sleep',['woke','wake','slept','sleep','went to bed','dozed']],
+ ['money',['work','report','office','business','claude','build','coding','meeting','project','client','ship','launch','deploy']]
+];
+function mxCatFor(t){t=' '+t.toLowerCase()+' ';for(var i=0;i<MX_KW.length;i++){for(var j=0;j<MX_KW[i][1].length;j++){if(t.indexOf(MX_KW[i][1][j])>=0)return MX_KW[i][0];}}return 'money';}
+function _m2(h,mm,ap){h=+h;mm=mm?+mm:0;if(ap){ap=ap.toLowerCase();if(ap.charAt(0)==='p'&&h<12)h+=12;if(ap.charAt(0)==='a'&&h===12)h=0;}return ((h%24)*60+mm)%1440;}
+function mxTimesIn(s){var out=[],re=/\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?/gi,m;while((m=re.exec(s))){var h=+m[1];if(h>24)continue;if(m[2]&&+m[2]>59)continue;if(!m[2]&&!m[3]&&h===0)continue;out.push(_m2(m[1],m[2],m[3]));}return out;}
+function mxParseSpeech(text){
+ var t=(text||'').replace(/\s+/g,' ').trim();
+ var norm=t.replace(/\b(\d{1,2})(\d{2})\b/g,'$1:$2').replace(/([ap])\s*\.?\s*m\b/gi,'$1m');
+ var wake=null,wm=norm.match(/\bwoke(?:\s*up)?\s*(?:at|around|by)?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+ if(wm)wake=_m2(wm[1],wm[2],wm[3]);
+ var parts=norm.split(/\s*(?:[.;,]|\bthen\b|\band then\b|\bafter that\b|\bafter which\b|\blater\b)\s*/i).map(function(s){return s.trim();}).filter(function(s){return s.length>1;});
+ var segs=parts.map(function(p){
+  var ts=mxTimesIn(p);
+  var lab=p.replace(/\b(from|at|around|by|to|till|until|between|and|we|i|just|the|a|on|in|of|for|was|is|am|were|been|had|have|minutes|minute|mins|min|hours|hour|spent|went|into|some|today)\b/gi,' ')
+           .replace(/\b\d{1,2}(?::\d{2})?\s*(am|pm)?\b/gi,' ').replace(/[^a-z0-9 ]/gi,' ').replace(/\s+/g,' ').trim();
+  if(lab.length>52)lab=lab.slice(0,52);
+  return {cat:mxCatFor(p),times:ts,label:lab};
+ });
+ var blocks=[],cursor=wake;
+ segs.forEach(function(s,i){
+  var st=null,en=null;
+  if(s.times.length>=2){st=s.times[0];en=s.times[1];}
+  else if(s.times.length===1){st=s.times[0];}
+  if(st==null&&cursor!=null)st=cursor;
+  if(st==null)return;
+  if(en==null){var nx=null;for(var k=i+1;k<segs.length;k++){if(segs[k].times.length){nx=segs[k].times[0];break;}}en=(nx!=null&&nx>st)?nx:st+30;}
+  if(en<=st)en=st+30;
+  blocks.push({s:minToStr(st),e:minToStr(en),cat:s.cat,l:s.label||s.cat});
+  cursor=en;
+ });
+ if(wake!=null)blocks.unshift({s:'00:00',e:minToStr(wake),cat:'sleep',l:'sleep'});
+ return {blocks:blocks,transcript:t};
+}
+function mxSpeakBtn(){
+ if(document.getElementById('mxSpeak'))return;
+ var b=document.createElement('button');b.id='mxSpeak';
+ b.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:9997;background:#2f6fed;color:#fff;border:none;border-radius:26px;padding:13px 22px;font:600 15px system-ui,-apple-system,Segoe UI,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.45);cursor:pointer;display:flex;align-items:center;gap:9px';
+ b.innerHTML='<svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.9V21a1 1 0 0 0 2 0v-3.1A7 7 0 0 0 19 11z"/></svg><span id="mxSpeakT">Speak my day</span>';
+ b.onclick=mxStartListen;document.body.appendChild(b);
+}
+function mxStartListen(){
+ var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!SR){alert('This browser cannot listen. Please open the app in Google Chrome, then tap Speak my day again.');return;}
+ if(mxListening){try{mxRec.stop();}catch(e){}return;}
+ mxRec=new SR();mxRec.lang='en-IN';mxRec.interimResults=false;mxRec.maxAlternatives=1;mxRec.continuous=false;
+ var t=document.getElementById('mxSpeakT'),b=document.getElementById('mxSpeak');
+ mxRec.onstart=function(){mxListening=true;if(t)t.textContent='Listening… tap to stop';if(b)b.style.background='#d8342f';};
+ mxRec.onerror=function(e){mxListening=false;if(t)t.textContent='Speak my day';if(b)b.style.background='#2f6fed';if(e&&e.error==='not-allowed')alert('Please allow microphone access, then tap Speak my day again.');};
+ mxRec.onend=function(){mxListening=false;if(t)t.textContent='Speak my day';if(b)b.style.background='#2f6fed';};
+ mxRec.onresult=function(ev){var txt='';for(var i=0;i<ev.results.length;i++)txt+=ev.results[i][0].transcript;mxSpeechPreview(txt);};
+ try{mxRec.start();}catch(e){alert('Could not start listening. Tap Speak my day again.');}
+}
+function mxSpeechPreview(text){
+ var r=mxParseSpeech(text);
+ var m=document.getElementById('mxSpeakModal');
+ if(!m){m=document.createElement('div');m.id='mxSpeakModal';m.style.cssText='position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;font-family:system-ui,-apple-system,Segoe UI,sans-serif';document.body.appendChild(m);}
+ var CN={money:'#6FB52E',krishna:'#3F7FD0',chant:'#8a76d8',sleep:'#5b5b62',body:'#EF9F27',recreation:'#1FB6A6',hygiene:'#C89A5E',family:'#d16ab0',knowledge:'#F2CE1B',transition:'#9E9C94'};
+ var safe=r.transcript.replace(/[<>&]/g,' ');
+ var rows=r.blocks.map(function(b){return '<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:13px"><span style="width:10px;height:10px;border-radius:3px;background:'+(CN[b.cat]||'#888')+';flex:0 0 auto"></span><span style="width:96px;color:#aeb3ba;font-variant-numeric:tabular-nums">'+b.s+'–'+b.e+'</span><span style="flex:1;color:#e3e5e8">'+b.l.replace(/[<>&]/g,'')+'</span><span style="color:#8b9099;font-size:11px">'+b.cat+'</span></div>';}).join('')||'<div style="color:#E86A5E;font-size:13px;margin-top:8px">I could not pick out clear times. Tap Edit words to fix it, or say times like "6 to 8".</div>';
+ m.innerHTML='<div style="width:400px;max-width:94vw;max-height:86vh;overflow:auto;background:#0e0e11;border:1px solid #2a2b31;border-radius:16px;padding:18px"><div style="font-weight:700;font-size:15px;color:#f3f4f6">Here is what I understood</div><div style="font-size:12px;color:#9aa0a8;margin:6px 0 10px;font-style:italic">“'+safe+'”</div><div id="mxSpRows">'+rows+'</div><textarea id="mxSpEdit" style="display:none;width:100%;box-sizing:border-box;margin-top:10px;background:#16171b;border:1px solid #34353b;border-radius:8px;color:#e3e5e8;padding:9px;font-size:13px;min-height:70px">'+safe+'</textarea><div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><button id="mxSpSave" style="flex:1;min-width:110px;background:#1D9E75;color:#fff;border:none;border-radius:9px;padding:11px;font-size:14px;font-weight:600;cursor:pointer">Add to today</button><button id="mxSpEditB" style="background:#16171b;color:#c9ccd2;border:1px solid #34353b;border-radius:9px;padding:11px 14px;font-size:13px;cursor:pointer">Edit words</button><button id="mxSpCancel" style="background:#16171b;color:#c9ccd2;border:1px solid #34353b;border-radius:9px;padding:11px 14px;font-size:13px;cursor:pointer">Cancel</button></div></div>';
+ m.style.display='flex';
+ var cur=r;
+ m.querySelector('#mxSpCancel').onclick=function(){m.style.display='none';};
+ m.querySelector('#mxSpEditB').onclick=function(){var ta=m.querySelector('#mxSpEdit');if(ta.style.display==='none'){ta.style.display='block';ta.focus();this.textContent='Re-read';}else{mxSpeechPreview(ta.value);}};
+ m.querySelector('#mxSpSave').onclick=function(){mxApplySpeech(cur);m.style.display='none';};
+}
+function mxApplySpeech(r){
+ if(!r||!r.blocks||!r.blocks.length)return;
+ var tk=todayKey();var d=DB.days[tk];if(!d){d=DB.days[tk]={japa:{count:0,target:18},expenses:[],rsp:[],autofill:[],blocks:[]};}
+ if(!d.blocks)d.blocks=[];if(!d.autofill)d.autofill=[];
+ r.blocks.forEach(function(b){d.blocks.push({s:b.s,e:b.e,cat:b.cat,l:b.l});});
+ var now=new Date();d.autofill.push({time:minToStr(now.getHours()*60+now.getMinutes()),t:'Voice: '+r.transcript.slice(0,70),d:''});
+ try{markEdited(tk);}catch(e){}
+ try{curDay=tk;renderAll();}catch(e){}
+}
+try{mxInitGate();}catch(e){}try{mxSpeakBtn();}catch(e){}
 if(FB_CONFIG){(function(){var base='https://www.gstatic.com/firebasejs/10.12.2/';var mods=['firebase-app-compat.js','firebase-auth-compat.js','firebase-firestore-compat.js'];var i=0;(function next(){if(i>=mods.length){fbBoot();return;}var sc=document.createElement('script');sc.src=base+mods[i++];sc.onload=next;sc.onerror=function(){console.warn('fb sdk load failed');};document.head.appendChild(sc);})();})();}
 ensurePlan();planNotify();setInterval(planNotify,30000);
 function planReviewCheck(force){ensurePlan();var now=new Date(),tdy=todayKey(),nm=now.getHours()*60+now.getMinutes();if(!force&&Date.now()<(+localStorage.getItem('mx-prsnooze')||0))return;if(_pendGap())return;var due=(DB.plan||[]).filter(function(t){if(t.done)return false;if(t.date<tdy)return true;if(t.date===tdy&&t.time){var p=t.time.split(':');return nm-((+p[0])*60+(+p[1]))>60;}return false;});if(!due.length)return;
