@@ -383,20 +383,22 @@ function mxParseSpeech(text){
  var t=(text||'').replace(/\s+/g,' ').trim();
  var norm=t.replace(/\b(\d{1,2})(\d{2})\b/g,'$1:$2').replace(/([ap])\s*\.?\s*m\b/gi,'$1m');
  var wake=null,wm=norm.match(/\bwoke(?:\s*up)?\s*(?:at|around|by)?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
- if(wm)wake=_m2(wm[1],wm[2],wm[3]);
- var parts=norm.split(/\s*(?:[.;,]|\bthen\b|\band then\b|\bafter that\b|\bafter which\b|\blater\b)\s*/i).map(function(s){return s.trim();}).filter(function(s){return s.length>1;});
+ if(wm)wake=_m2(wm[1],wm[2],null);/* wake is treated as morning: "woke 5 pm" is almost always a mis-hear of 5 am */
+ var parts=norm.split(/\s*(?:[.;,]|\bthen\b|\band then\b|\bafter that\b|\bafter which\b|\blater\b)\s*/i).map(function(s){return s.trim();}).filter(function(s){return s.length>1 && !/(not right|wrong|update|see entries|fix this|mistake|correction|entries|because now|currently|right now|it is only|it'?s only|only now|now it)/i.test(s);});
  var segs=parts.map(function(p){
-  var ts=mxTimesIn(p);
+  var forTimes=(/\bwok?e\b|\bwake\b/i.test(p))?p.replace(/\b([ap])\.?\s*m\b/gi,' '):p;/* a wake clause is morning throughout */
+  var ts=mxTimesIn(forTimes);
   var lab=p.replace(/\b(from|at|around|by|to|till|until|between|and|we|i|just|the|a|on|in|of|for|was|is|am|were|been|had|have|minutes|minute|mins|min|hours|hour|spent|went|into|some|today)\b/gi,' ')
            .replace(/\b\d{1,2}(?::\d{2})?\s*(am|pm)?\b/gi,' ').replace(/[^a-z0-9 ]/gi,' ').replace(/\s+/g,' ').trim();
   if(lab.length>52)lab=lab.slice(0,52);
-  return {cat:mxCatFor(p),times:ts,label:lab};
+  return {cat:mxCatFor(p),times:ts,label:lab,isWake:(/\bwok?e\b|\bwake\b/i.test(p)),endMarker:(/\b(till|until|upto|up to)\b/i.test(p))};
  });
  var blocks=[],cursor=wake;
  segs.forEach(function(s,i){
+  if(s.isWake&&s.cat==='sleep')return;/* wake-only clause is covered by the 00:00->wake sleep block */
   var st=null,en=null;
-  if(s.times.length>=2){st=s.times[0];en=s.times[1];}
-  else if(s.times.length===1){st=s.times[0];}
+  if(s.times.length>=2){st=s.times[0];en=s.times[1];if(en<=st&&en+720>st&&en+720<1440)en+=720;/* "2pm to 4:30" keeps 4:30 in the afternoon */}
+  else if(s.times.length===1){if(s.endMarker&&cursor!=null){st=cursor;en=s.times[0];}else{st=s.times[0];}}
   if(st==null&&cursor!=null)st=cursor;
   if(st==null)return;
   if(en==null){var nx=null;for(var k=i+1;k<segs.length;k++){if(segs[k].times.length){nx=segs[k].times[0];break;}}en=(nx!=null&&nx>st)?nx:st+30;}
@@ -445,18 +447,20 @@ function mxSpeechPreview(text){
  var CN={money:'#6FB52E',krishna:'#3F7FD0',chant:'#8a76d8',sleep:'#5b5b62',body:'#EF9F27',recreation:'#1FB6A6',hygiene:'#C89A5E',family:'#d16ab0',knowledge:'#F2CE1B',transition:'#9E9C94'};
  var safe=r.transcript.replace(/[<>&]/g,' ');
  var rows=r.blocks.map(function(b){return '<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:13px"><span style="width:10px;height:10px;border-radius:3px;background:'+(CN[b.cat]||'#888')+';flex:0 0 auto"></span><span style="width:96px;color:#aeb3ba;font-variant-numeric:tabular-nums">'+b.s+'–'+b.e+'</span><span style="flex:1;color:#e3e5e8">'+b.l.replace(/[<>&]/g,'')+'</span><span style="color:#8b9099;font-size:11px">'+b.cat+'</span></div>';}).join('')||'<div style="color:#E86A5E;font-size:13px;margin-top:8px">I could not pick out clear times. Tap Edit words to fix it, or say times like "6 to 8".</div>';
- m.innerHTML='<div style="width:400px;max-width:94vw;max-height:86vh;overflow:auto;background:#0e0e11;border:1px solid #2a2b31;border-radius:16px;padding:18px"><div style="font-weight:700;font-size:15px;color:#f3f4f6">Here is what I understood</div><div style="font-size:12px;color:#9aa0a8;margin:6px 0 10px;font-style:italic">“'+safe+'”</div><div id="mxSpRows">'+rows+'</div><textarea id="mxSpEdit" style="display:none;width:100%;box-sizing:border-box;margin-top:10px;background:#16171b;border:1px solid #34353b;border-radius:8px;color:#e3e5e8;padding:9px;font-size:13px;min-height:70px">'+safe+'</textarea><button id="mxSpMore" style="width:100%;margin-top:12px;background:#2456c9;color:#fff;border:none;border-radius:9px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px"><svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.9V21a1 1 0 0 0 2 0v-3.1A7 7 0 0 0 19 11z"/></svg><span>Speak more</span></button><div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button id="mxSpSave" style="flex:1;min-width:110px;background:#1D9E75;color:#fff;border:none;border-radius:9px;padding:11px;font-size:14px;font-weight:600;cursor:pointer">Add to today</button><button id="mxSpEditB" style="background:#16171b;color:#c9ccd2;border:1px solid #34353b;border-radius:9px;padding:11px 14px;font-size:13px;cursor:pointer">Edit words</button><button id="mxSpCancel" style="background:#16171b;color:#c9ccd2;border:1px solid #34353b;border-radius:9px;padding:11px 14px;font-size:13px;cursor:pointer">Cancel</button></div></div>';
+ m.innerHTML='<div style="width:400px;max-width:94vw;max-height:86vh;overflow:auto;background:#0e0e11;border:1px solid #2a2b31;border-radius:16px;padding:18px"><div style="font-weight:700;font-size:15px;color:#f3f4f6">Here is what I understood</div><div style="font-size:12px;color:#9aa0a8;margin:6px 0 10px;font-style:italic">“'+safe+'”</div><div id="mxSpRows">'+rows+'</div><textarea id="mxSpEdit" style="display:none;width:100%;box-sizing:border-box;margin-top:10px;background:#16171b;border:1px solid #34353b;border-radius:8px;color:#e3e5e8;padding:9px;font-size:13px;min-height:70px">'+safe+'</textarea><button id="mxSpMore" style="width:100%;margin-top:12px;background:#2456c9;color:#fff;border:none;border-radius:9px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px"><svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.9V21a1 1 0 0 0 2 0v-3.1A7 7 0 0 0 19 11z"/></svg><span>Speak more</span></button><div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button id="mxSpSave" style="flex:1;min-width:96px;background:#1D9E75;color:#fff;border:none;border-radius:9px;padding:11px;font-size:14px;font-weight:600;cursor:pointer">Add to today</button><button id="mxSpReplace" style="flex:1;min-width:96px;background:#C6742A;color:#fff;border:none;border-radius:9px;padding:11px;font-size:13px;font-weight:600;cursor:pointer">Replace today</button><button id="mxSpEditB" style="background:#16171b;color:#c9ccd2;border:1px solid #34353b;border-radius:9px;padding:11px 14px;font-size:13px;cursor:pointer">Edit words</button><button id="mxSpCancel" style="background:#16171b;color:#c9ccd2;border:1px solid #34353b;border-radius:9px;padding:11px 14px;font-size:13px;cursor:pointer">Cancel</button></div></div>';
  m.style.display='flex';
  var cur=r;
  m.querySelector('#mxSpCancel').onclick=function(){m.style.display='none';};
  m.querySelector('#mxSpEditB').onclick=function(){var ta=m.querySelector('#mxSpEdit');if(ta.style.display==='none'){ta.style.display='block';ta.focus();this.textContent='Re-read';}else{mxSpeechPreview(ta.value);}};
- m.querySelector('#mxSpSave').onclick=function(){if(mxListening)mxStopListen();mxApplySpeech(cur);m.style.display='none';};
+ m.querySelector('#mxSpSave').onclick=function(){if(mxListening)mxStopListen();mxApplySpeech(cur,false);m.style.display='none';};
+ m.querySelector('#mxSpReplace').onclick=function(){if(mxListening)mxStopListen();mxApplySpeech(cur,true);m.style.display='none';};
  m.querySelector('#mxSpMore').onclick=function(){if(mxListening){mxStopListen();}else{mxBeginListen(cur.transcript,function(full){mxSpeechPreview(full);});}};
 }
-function mxApplySpeech(r){
+function mxApplySpeech(r,replace){
  if(!r||!r.blocks||!r.blocks.length)return;
  var tk=todayKey();var d=DB.days[tk];if(!d){d=DB.days[tk]={japa:{count:0,target:18},expenses:[],rsp:[],autofill:[],blocks:[]};}
  if(!d.blocks)d.blocks=[];if(!d.autofill)d.autofill=[];
+ if(replace)d.blocks=[];
  r.blocks.forEach(function(b){d.blocks.push({s:b.s,e:b.e,cat:b.cat,l:b.l});});
  var now=new Date();d.autofill.push({time:minToStr(now.getHours()*60+now.getMinutes()),t:'Voice: '+r.transcript.slice(0,70),d:''});
  try{markEdited(tk);}catch(e){}
